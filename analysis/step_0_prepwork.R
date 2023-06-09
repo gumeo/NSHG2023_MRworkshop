@@ -4,6 +4,10 @@ library(tidyverse)
 library(googledrive)
 library(data.table)
 library(MendelianRandomization)
+library(simex) # to run simex correction
+library(knitr) # to make nice embedded tables
+library(furrr) # to run MR PRESSO serially
+library(eoffice) # to save plots (optional)
 
 # MR-PRESSO
 if (!require("devtools")) { install.packages("devtools") } else {}
