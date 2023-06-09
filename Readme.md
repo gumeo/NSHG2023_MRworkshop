@@ -5,9 +5,12 @@ The workshop material is currently being added to this repository!
 We encourage you to clone (or download) this repository and open the `Rproj`
 file in Rstudio. Then run the code in `./analysis/step_0_prepwork.R`.
 
-This downloads the sumstats required for the exercises.
+**This ensures the following:**
 
-## Recomended Material
+1) That you have all the require packages installed
+2) That you can download the sumstats (4 Gb) ahead of time 
+
+## Recommended Material
 
 We recommend you to read the following before the workshop
 
