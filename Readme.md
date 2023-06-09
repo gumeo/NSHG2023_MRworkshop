@@ -1,5 +1,12 @@
 # NSHG 2023 Mendelian Randomization Workshop
 
+**[NSHG Estonia](https://nshg-pm2023.org)**
+
+The workshop will be led by:
+
+- Joëlle Pasman, Karolinska Institutet, Sweden
+- Guðmundur Einarsson, deCODE genetics, Iceland
+
 The workshop material is currently being added to this repository!
 
 We encourage you to clone (or download) this repository and open the `Rproj`
