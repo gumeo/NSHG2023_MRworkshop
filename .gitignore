@@ -3,3 +3,6 @@
 .RData
 .Ruserdata
 sumstats
+.DS_Store
+results
+*.rds
