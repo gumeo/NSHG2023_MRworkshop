@@ -6,3 +6,4 @@ sumstats
 .DS_Store
 results
 *.rds
+*.html

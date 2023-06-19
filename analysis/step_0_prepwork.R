@@ -9,6 +9,8 @@
 packages_to_install_from_cran <- c("tidyverse",
                          "googledrive",
                          "data.table",
+                         "ggrepel", # Repel labels in ggplots
+                         "patchwork", # Nice way to combine ggplots
                          "MendelianRandomization", # MR package from S. Burgess
                          "simex", # to run simex correction
                          "knitr", # to make nice embedded tables

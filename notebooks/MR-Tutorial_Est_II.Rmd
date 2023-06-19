@@ -1,0 +1,226 @@
+---
+title: "MR tutorial II"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    collapsed: true
+    theme: united
+  author: "Joëlle Pasman, Gudmundur Einarsson"
+  date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+
+# Essential
+library(data.table)
+library(ggplot2)
+library(ggrepel)
+library(patchwork)
+library(MendelianRandomization)
+
+# Working directory is root of 
+knitr::opts_knit$set(root.dir = "../notebooks")
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, error=FALSE)
+
+# Prep data function
+prep_data <- function(exp_df, out_df) {
+  beta_exposure <- exp_df$Beta
+  pval_exposure <- exp_df$comb_Pval
+  beta_outcome <- out_df$Beta
+  pval_outcome <- out_df$comb_Pval
+  annotations_rs <- exp_df$rsName
+  
+  x<-beta_exposure
+  y<-beta_outcome
+  sex<-abs(x/qnorm(pval_exposure/2, lower.tail = FALSE))
+  sey<-abs(y/qnorm(pval_outcome/2, lower.tail = FALSE))
+  
+  data<-as.data.frame(cbind(x,y,sex,sey,
+                            pval_exposure,
+                            pval_outcome))
+  data$annotations_rs <- annotations_rs
+  
+  for (i in 1:nrow(data)){
+    if (data$x[i]<0){
+      data$x[i]<-(-1)*data$x[i]
+      data$y[i]<-(-1)*data$y[i]
+    }
+  }
+  
+  f<-subset(data,data$x!=0 & data$y!=0)
+  return(f)
+}
+
+# Helper plot function
+mr_results_plot <- function(data, mr_ivw_slope, mr_egger_slope, mr_egger_intercept,
+                            title_text, subtitle_text, xlab_text, ylab_text, xlim_v) {
+  g_p <- ggplot(data=data, aes(x=x, y=y)) +
+    geom_pointrange(aes(ymin=y-1.96*sey, ymax=y+1.96*sey)) +
+    geom_pointrange(aes(xmin=x-1.96*sex, xmax=x+1.96*sex)) +
+    geom_abline(aes(colour="IVW",slope=mr_ivw_slope, intercept = 0),linetype="dotted",lwd=1.1) +
+    geom_abline(aes(colour="MR-Egger",slope=mr_egger_slope, intercept = mr_egger_intercept),linetype="dotted",lwd=1.1) +
+    scale_color_manual(name = "Regression Line", values = c("IVW" = "blue", "MR-Egger" = "red")) +
+    theme_bw() +
+    ggtitle(title_text, subtitle=subtitle_text)+
+    theme(text = element_text(size = 14)) + xlab(xlab_text) + ylab(ylab_text) +
+    geom_hline(yintercept = 0, linetype="dotted") + geom_vline(xintercept = 0, linetype="dotted") +
+    theme(axis.line = element_line(colour = "black"), panel.border = element_blank()) +
+    theme(legend.position = 'top') +
+    geom_label_repel(aes(label = annotations),
+                     size = 3.5,box.padding = unit(0.2, "lines"),point.padding = unit(0.2, "lines"))
+  if(!is.null(xlim_v)) {
+    g_p <- g_p + xlim(xlim_v)
+  }
+  return(g_p)
+}
+
+```
+
+Here we simply load the data directly, i.e. it has already been harmonized. You can find the table in the supplementary material of the published manuscript (and here under `./tables`). Dorsalgia, the common backpain diagnosis has the code M54 and IDD has the code M51.
+
+```{r Load data}
+##############################################################
+# Load instruments (already harmonized)
+# M54 is Dorsalgia
+# M51 is IDD
+##############################################################
+
+# Instruments and associations with exposure
+dorsalgia_exp <- fread("../tables/M54_IS_DK_FIN_Exposure.txt")
+IDD_exp <- fread("../tables/M51_IS_DK_FIN_Exposure.txt")
+
+# Associations with outcome
+dorsalgia_out_idd_exp <- fread("../tables/M54_UKB_Outcome_w_M51_as_exp.txt")
+IDD_out_dorsalgia_exp <- fread("../tables/M51_UKB_Outcome_w_M54_as_exp.txt")
+
+# Simple ordering 
+data_dor_exp <- prep_data(exp_df = dorsalgia_exp,
+                          out_df = IDD_out_dorsalgia_exp)
+# Add some custom annotations
+data_dor_exp$annotations <- ifelse(data_dor_exp$y < 0 | data_dor_exp$y> 0.07, 
+                                   data_dor_exp$annotations_rs,"")
+
+data_idd_exp <- prep_data(exp_df = IDD_exp,
+                          out_df = dorsalgia_out_idd_exp)
+
+data_idd_exp$annotations <- ifelse(data_idd_exp$y < 0 | data_idd_exp$x > 0.14, data_idd_exp$annotations_rs,"")
+
+```
+
+Here we demonstrate how the analysis can be performed in R, without any packages.
+
+```{r Basic R approach}
+##############################################################
+# basic R approach
+##############################################################
+
+# Inverse variance weighted regression
+mr_slope_1 <- lm(y ~ x-1, weights=1/sey^2, data = data_dor_exp)
+mr_intercept_1 <- lm(y ~ 1, weights=1/sey^2, data = data_dor_exp)
+mr_egger_1 <- lm(y ~ x, weights=1/sey^2, data = data_dor_exp)
+
+gp <- mr_results_plot(data = data_dor_exp, 
+                      mr_ivw_slope = mr_slope_1$coefficients[1], 
+                      mr_egger_slope = mr_egger_1$coefficients[2],
+                      mr_egger_intercept = mr_egger_1$coefficients[1],
+                      title_text = "Dorsalgia variants", 
+                      subtitle_text = paste0("Dorsalgia (IS,DK & FIN) Exposure and IDD (UK-Biobank) Outcome",
+                                             "\nIVW estimate is : ", format(coef(mr_slope_1)[1], digits = 3)), 
+                      xlab_text = "Exposure Dorsalgia-log(OR)", ylab_text = "Outcome IDD-log(OR)", xlim_v = c(0,0.1))
+(gp)
+
+
+###
+# Reverse
+###
+mr_slope_2 <- lm(y ~ x-1, weights=1/sey^2, data = data_idd_exp)
+mr_intercept_2 <- lm(y ~ 1, weights=1/sey^2, data = data_idd_exp)
+mr_egger_2 <- lm(y ~ x, weights=1/sey^2, data = data_idd_exp)
+
+gp2 <- mr_results_plot(data = data_idd_exp, 
+                      mr_ivw_slope = mr_slope_2$coefficients[1], 
+                      mr_egger_slope = mr_egger_2$coefficients[2],
+                      mr_egger_intercept = mr_egger_2$coefficients[1],
+                      title_text = "IDD variants", 
+                      subtitle_text = paste0("IDD (IS,DK & FIN) Exposure and Dorsalgia (UK-Biobank) Outcome",
+                                             "\nIVW estimate is : ", format(coef(mr_slope_2)[1], digits = 3)), 
+                      xlab_text = "Exposure IDD-log(OR)", ylab_text = "Outcome Dorsalgia-log(OR)",
+                      xlim_v = NULL)
+(gp2)
+
+# Combine in single plot
+gp + gp2
+
+```
+
+Here we try out the `MendelianRandomization` package. We rerun the analysis and obtain the same point estimates.
+
+```{r MendelianRandomization Package}
+##############################################################
+# MendelianRandomization package
+##############################################################
+dor_inp <- mr_input(bx = data_dor_exp$x,
+                    by = data_dor_exp$y,
+                    bxse = data_dor_exp$sex,
+                    byse = data_dor_exp$sey)
+ivw_res_1 <- mr_ivw(dor_inp)
+egger_res_1 <- mr_egger(dor_inp)
+
+
+gp <- mr_results_plot(data = data_dor_exp, 
+                      mr_ivw_slope = ivw_res_1@Estimate, 
+                      mr_egger_slope = egger_res_1@Estimate,
+                      mr_egger_intercept = egger_res_1@Intercept,
+                      title_text = "Dorsalgia variants", 
+                      subtitle_text = paste0("Dorsalgia (IS,DK & FIN) Exposure and IDD (UK-Biobank) Outcome",
+                                             "\nIVW estimate is : ", format(coef(mr_slope_1)[1], digits = 3)), 
+                      xlab_text = "Exposure Dorsalgia-log(OR)", ylab_text = "Outcome IDD-log(OR)", xlim_v = c(0,0.1))
+(gp)
+
+idd_inp <- mr_input(bx = data_idd_exp$x,
+                    by = data_idd_exp$y,
+                    bxse = data_idd_exp$sex,
+                    byse = data_idd_exp$sey)
+ivw_res_2 <- mr_ivw(idd_inp)
+egger_res_2 <- mr_egger(idd_inp)
+
+gp2 <- mr_results_plot(data = data_idd_exp, 
+                       mr_ivw_slope = ivw_res_2@Estimate, 
+                       mr_egger_slope = egger_res_2@Estimate,
+                       mr_egger_intercept = egger_res_2@Intercept,
+                       title_text = "IDD variants", 
+                       subtitle_text = paste0("IDD (IS,DK & FIN) Exposure and Dorsalgia (UK-Biobank) Outcome",
+                                              "\nIVW estimate is : ", format(coef(mr_slope_2)[1], digits = 3)), 
+                       xlab_text = "Exposure IDD-log(OR)", ylab_text = "Outcome Dorsalgia-log(OR)",
+                       xlim_v = NULL)
+(gp2)
+
+# Combine in singleplot
+gp + gp2
+
+```
+
+```{r Normal vs t-dist}
+##############################################################
+# t-test vs normal
+# Let's observe the impact with the number of variants
+##############################################################
+
+idd_inp <- mr_input(bx = data_idd_exp$x,
+                    by = data_idd_exp$y,
+                    bxse = data_idd_exp$sex,
+                    byse = data_idd_exp$sey)
+
+
+ivw_res_norm <- mr_ivw(idd_inp)
+ivw_res_t <- mr_ivw(idd_inp, distribution = "t-dist")
+
+print("P-value with normal assumptions: ")
+print(ivw_res_norm@Pvalue)
+
+print("P-value with t-distribution: ")
+print(ivw_res_t@Pvalue)
+
+```
