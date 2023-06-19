@@ -27,3 +27,7 @@ We recommend you to read the following before the workshop
 ## Notebooks
 
 To run the `notebooks`, you can either knit them into an html document, or run each chunk interactively in Rstudio.
+
+## Presentations
+
+To be added!
