@@ -1,5 +1,5 @@
 ---
-title: "MR tutorial II"
+title: "MR tutorial I"
 output:
   html_document:
     code_folding: hide
@@ -14,213 +14,617 @@ output:
 ```{r setup, include=FALSE}
 
 # Essential
+
+library(tidyverse)
 library(data.table)
-library(ggplot2)
-library(ggrepel)
-library(patchwork)
-library(MendelianRandomization)
+library(TwoSampleMR)
+library(ggforestplot)
+
+# Helpful (some non-essential code may not work without these)
+library(simex)
+library(knitr)
 
 # Working directory is root of 
 knitr::opts_knit$set(root.dir = "../notebooks")
 knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, error=FALSE)
 
-# Prep data function
-prep_data <- function(exp_df, out_df) {
-  beta_exposure <- exp_df$Beta
-  pval_exposure <- exp_df$comb_Pval
-  beta_outcome <- out_df$Beta
-  pval_outcome <- out_df$comb_Pval
-  annotations_rs <- exp_df$rsName
-  
-  x<-beta_exposure
-  y<-beta_outcome
-  sex<-abs(x/qnorm(pval_exposure/2, lower.tail = FALSE))
-  sey<-abs(y/qnorm(pval_outcome/2, lower.tail = FALSE))
-  
-  data<-as.data.frame(cbind(x,y,sex,sey,
-                            pval_exposure,
-                            pval_outcome))
-  data$annotations_rs <- annotations_rs
-  
-  for (i in 1:nrow(data)){
-    if (data$x[i]<0){
-      data$x[i]<-(-1)*data$x[i]
-      data$y[i]<-(-1)*data$y[i]
-    }
-  }
-  
-  f<-subset(data,data$x!=0 & data$y!=0)
-  return(f)
+```
+
+For your setup, put all the GWAS summary statistics in a sub folder called sumstats in your working directory. In the same directory, create a folder called "results". 
+
+# Part 1: The basics
+
+## Data preparation steps
+
+First, we create the instrument, using a threshold of p<5e-08 and an R2<0.01. Note that the chunk below requires internet access to run. In this example, we use BMI as our exposure. You can replace this with any other trait. Note that if you use your own summary statistics with different column names, you need to modify the code.
+
+```{r Create instruments}
+
+# Extract hits 
+
+BMI <- fread("../sumstats/bmi.txt")
+
+BMIhits <- BMI %>% 
+  filter(P<5e-08) %>%
+  mutate(Phenotype="BMI", effect_allele=A1, other_allele=A2, eaf=EAF, beta=B, se=SE, pval=P, samplesize=N) 
+
+fwrite(BMIhits, "../sumstats/BMI_hits.txt", sep=" ", quote=F, na=NA)
+
+# Reading in the exposure file & derive independent instruments
+# Note that this step requires internet access (function uses online reference data)
+
+BMI_exp_dat <- read_exposure_data("../sumstats/BMI_hits.txt")
+BMI_exp_dat <- clump_data(BMI_exp_dat, clump_r2 = 0.01)
+
+BMI_exp_dat %>% 
+  summarise(IV_SNPs=n())
+
+```
+
+
+Next, we prepare and format the summary statistics that we'll use as outcomes. We will check if the instrument SNPs are all present in the outcome data files and harmonize the data frames.
+
+
+```{r Harmonize exposure-outcome data}
+
+# For each instrument - outcome combination, we look up the instrument SNPs in the outcome data.
+
+files <- c("../sumstats/scz.txt",
+           "../sumstats/mdd.txt",
+           "../sumstats/healthspan.txt")
+
+outcomedata <- list()
+
+for (f in 1:length(files)) {
+              outcomedata[[f]] <- read_outcome_data(snps = BMI_exp_dat$SNP,
+              filename = files[f],
+              sep = ",",
+              snp_col = "SNP",
+              beta_col = "B",
+              se_col = "SE",
+              effect_allele_col = "A1",
+              other_allele_col = "A2",
+              eaf_col = "EAF",
+              pval_col = "P", 
+              ncase="N_CAS",
+              ncontrol="N_CON",
+              samplesize_col="N", 
+              phenotype_col="Outcome")
 }
 
-# Helper plot function
-mr_results_plot <- function(data, mr_ivw_slope, mr_egger_slope, mr_egger_intercept,
-                            title_text, subtitle_text, xlab_text, ylab_text, xlim_v) {
-  g_p <- ggplot(data=data, aes(x=x, y=y)) +
-    geom_pointrange(aes(ymin=y-1.96*sey, ymax=y+1.96*sey)) +
-    geom_pointrange(aes(xmin=x-1.96*sex, xmax=x+1.96*sex)) +
-    geom_abline(aes(colour="IVW",slope=mr_ivw_slope, intercept = 0),linetype="dotted",lwd=1.1) +
-    geom_abline(aes(colour="MR-Egger",slope=mr_egger_slope, intercept = mr_egger_intercept),linetype="dotted",lwd=1.1) +
-    scale_color_manual(name = "Regression Line", values = c("IVW" = "blue", "MR-Egger" = "red")) +
-    theme_bw() +
-    ggtitle(title_text, subtitle=subtitle_text)+
-    theme(text = element_text(size = 14)) + xlab(xlab_text) + ylab(ylab_text) +
-    geom_hline(yintercept = 0, linetype="dotted") + geom_vline(xintercept = 0, linetype="dotted") +
-    theme(axis.line = element_line(colour = "black"), panel.border = element_blank()) +
-    theme(legend.position = 'top') +
-    geom_label_repel(aes(label = annotations),
-                     size = 3.5,box.padding = unit(0.2, "lines"),point.padding = unit(0.2, "lines"))
-  if(!is.null(xlim_v)) {
-    g_p <- g_p + xlim(xlim_v)
-  }
-  return(g_p)
+####
+# Harmonize
+
+exposure_outcome <- list()
+for (i in 1:length(outcomedata)) {
+  exposure_outcome[[i]] <- harmonise_data(
+    exposure_dat = BMI_exp_dat, 
+    outcome_dat = outcomedata[[i]]
+  )
+}
+
+# Keep only filtered SNPs
+for (i in 1:length(outcomedata)) {
+  exposure_outcome[[i]] <- subset(exposure_outcome[[i]], mr_keep==T)
+}
+
+# write harmonized files to tables for information on SNPs
+for (i in 1:length(outcomedata)) {
+  fwrite(outcomedata[[i]], paste0("../sumstats/BMI_to_", outcomedata[[i]]$outcome[[1]], "_harmonized.txt"))
 }
 
 ```
 
-Here we simply load the data directly, i.e. it has already been harmonized. You can find the table in the supplementary material of the published manuscript (and here under `./tables`). Dorsalgia, the common backpain diagnosis has the code M54 and IDD has the code M51.
+## Main analyses
 
-```{r Load data}
-##############################################################
-# Load instruments (already harmonized)
-# M54 is Dorsalgia
-# M51 is IDD
-##############################################################
+We run MR with and without Steiger-filtering (removing SNPs that explain more variance in the outcome than in the exposure, i.e., have horizontal pleiotropy). Note that the MR-Egger results should only be interpreted if I-squared (see below) is above .9, otherwise SIMEX correction is required.
 
-# Instruments and associations with exposure
-dorsalgia_exp <- fread("../tables/M54_IS_DK_FIN_Exposure.txt")
-IDD_exp <- fread("../tables/M51_IS_DK_FIN_Exposure.txt")
+```{r Main analyses, results='hide'}
 
-# Associations with outcome
-dorsalgia_out_idd_exp <- fread("../tables/M54_UKB_Outcome_w_M51_as_exp.txt")
-IDD_out_dorsalgia_exp <- fread("../tables/M51_UKB_Outcome_w_M54_as_exp.txt")
+mr_res <- exposure_outcome %>%
+  map(mr)
 
-# Simple ordering 
-data_dor_exp <- prep_data(exp_df = dorsalgia_exp,
-                          out_df = IDD_out_dorsalgia_exp)
-# Add some custom annotations
-data_dor_exp$annotations <- ifelse(data_dor_exp$y < 0 | data_dor_exp$y> 0.07, 
-                                   data_dor_exp$annotations_rs,"")
+# IVW results plot before Steiger filtering
 
-data_idd_exp <- prep_data(exp_df = IDD_exp,
-                          out_df = dorsalgia_out_idd_exp)
+MRres_forplot <- rbindlist(mr_res) %>% 
+  filter(method=="Inverse variance weighted")
 
-data_idd_exp$annotations <- ifelse(data_idd_exp$y < 0 | data_idd_exp$x > 0.14, data_idd_exp$annotations_rs,"")
-
-```
-
-Here we demonstrate how the analysis can be performed in R, without any packages.
-
-```{r Basic R approach}
-##############################################################
-# basic R approach
-##############################################################
-
-# Inverse variance weighted regression
-mr_slope_1 <- lm(y ~ x-1, weights=1/sey^2, data = data_dor_exp)
-mr_intercept_1 <- lm(y ~ 1, weights=1/sey^2, data = data_dor_exp)
-mr_egger_1 <- lm(y ~ x, weights=1/sey^2, data = data_dor_exp)
-
-gp <- mr_results_plot(data = data_dor_exp, 
-                      mr_ivw_slope = mr_slope_1$coefficients[1], 
-                      mr_egger_slope = mr_egger_1$coefficients[2],
-                      mr_egger_intercept = mr_egger_1$coefficients[1],
-                      title_text = "Dorsalgia variants", 
-                      subtitle_text = paste0("Dorsalgia (IS,DK & FIN) Exposure and IDD (UK-Biobank) Outcome",
-                                             "\nIVW estimate is : ", format(coef(mr_slope_1)[1], digits = 3)), 
-                      xlab_text = "Exposure Dorsalgia-log(OR)", ylab_text = "Outcome IDD-log(OR)", xlim_v = c(0,0.1))
-(gp)
+MRres_plot <- forestplot(MRres_forplot, 
+           title="MR results (IVW) before Steiger filtering",
+           name=outcome, 
+           estimate = b, 
+           se=se, 
+           colour = exposure,
+           xlab="Beta",
+           ylab="Outcome"
+           )
 
 
-###
-# Reverse
-###
-mr_slope_2 <- lm(y ~ x-1, weights=1/sey^2, data = data_idd_exp)
-mr_intercept_2 <- lm(y ~ 1, weights=1/sey^2, data = data_idd_exp)
-mr_egger_2 <- lm(y ~ x, weights=1/sey^2, data = data_idd_exp)
+####
+# Steiger filter all analyses
 
-gp2 <- mr_results_plot(data = data_idd_exp, 
-                      mr_ivw_slope = mr_slope_2$coefficients[1], 
-                      mr_egger_slope = mr_egger_2$coefficients[2],
-                      mr_egger_intercept = mr_egger_2$coefficients[1],
-                      title_text = "IDD variants", 
-                      subtitle_text = paste0("IDD (IS,DK & FIN) Exposure and Dorsalgia (UK-Biobank) Outcome",
-                                             "\nIVW estimate is : ", format(coef(mr_slope_2)[1], digits = 3)), 
-                      xlab_text = "Exposure IDD-log(OR)", ylab_text = "Outcome Dorsalgia-log(OR)",
-                      xlim_v = NULL)
-(gp2)
+# Need some extra columns to determine R2 for binary traits. If you have a binary exposure, fill in the number of cases, controls, and prevalence, and use log odds units
 
-# Combine in single plot
-gp + gp2
+for (i in 1:length(exposure_outcome)) {
+  exposure_outcome[[i]] <- exposure_outcome[[i]] %>% 
+    mutate(units.exposure="SD") %>%
+    # mutate(units.exposure="log_odds") %>%
+    # mutate(ncase.exposure=xxx) %>% 
+    # mutate(ncontrol.exposure=xxx) %>% 
+    # mutate(prevalence.exposure=xxx) %>% 
+    mutate(units.outcome=ifelse(!is.na(ncase.outcome), "log_odds", "SD")) %>% # this step uses the presence of an N cases column to determine if the outcome trait is binary
+    mutate(prevalence.outcome=ifelse(!is.na(ncase.outcome), ncase.outcome/samplesize.outcome, NA))
+}
 
-```
+# Determine which SNPs explain more variance in the outcome
+exposure_outcome <- exposure_outcome %>% 
+  map(steiger_filtering)
 
-Here we try out the `MendelianRandomization` package. We rerun the analysis and obtain the same point estimates.
+# Re-run while filtering out SNPs that are in the wrong direction and explain more variance in the outcome than in the exposure (dir=TRUE). Note you can also filter based on p-value but this is often a bit too stringent.
 
-```{r MendelianRandomization Package}
-##############################################################
-# MendelianRandomization package
-##############################################################
-dor_inp <- mr_input(bx = data_dor_exp$x,
-                    by = data_dor_exp$y,
-                    bxse = data_dor_exp$sex,
-                    byse = data_dor_exp$sey)
-ivw_res_1 <- mr_ivw(dor_inp)
-egger_res_1 <- mr_egger(dor_inp)
+mr_res_st <- list()
+for (i in 1:length(exposure_outcome)) {
+  mr_res_st[[i]] <- mr(subset(exposure_outcome[[i]], exposure_outcome[[i]]$steiger_dir==TRUE))
+}
 
+# Scatter plots after Steiger filtering (subset list of results based on length; if length is 0 there were no snps left after filtering)
+# mr_res_st <- keep(mr_res_st, ~ nrow(.) >0)
+# exposure_outcome_st <- keep(exposure_outcome, ~ any(.$steiger_dir))
 
-gp <- mr_results_plot(data = data_dor_exp, 
-                      mr_ivw_slope = ivw_res_1@Estimate, 
-                      mr_egger_slope = egger_res_1@Estimate,
-                      mr_egger_intercept = egger_res_1@Intercept,
-                      title_text = "Dorsalgia variants", 
-                      subtitle_text = paste0("Dorsalgia (IS,DK & FIN) Exposure and IDD (UK-Biobank) Outcome",
-                                             "\nIVW estimate is : ", format(coef(mr_slope_1)[1], digits = 3)), 
-                      xlab_text = "Exposure Dorsalgia-log(OR)", ylab_text = "Outcome IDD-log(OR)", xlim_v = c(0,0.1))
-(gp)
+dir.create("../results")
+for (i in 1:length(mr_res_st)) {
+  res1 <- mr_res_st[[i]]
+  dat1 <- exposure_outcome[[i]]
+  name <- paste0("scatter_",res1[1,4],"_",res1[1,3],"_steiger")
+  plot_path_svg <-  paste0("../results/", name,".svg")
+  plot_path_png <-  paste0("../results/", name,".png")
+  p_save <- mr_scatter_plot(res1,dat1)[[1]] + 
+    theme_bw() + theme(legend.position = "top")
+  ggsave(plot = p_save, filename = plot_path_svg)
+  ggsave(plot = p_save, filename = plot_path_png)
+}
 
-idd_inp <- mr_input(bx = data_idd_exp$x,
-                    by = data_idd_exp$y,
-                    bxse = data_idd_exp$sex,
-                    byse = data_idd_exp$sey)
-ivw_res_2 <- mr_ivw(idd_inp)
-egger_res_2 <- mr_egger(idd_inp)
+# IVW results plots after Steiger filtering
 
-gp2 <- mr_results_plot(data = data_idd_exp, 
-                       mr_ivw_slope = ivw_res_2@Estimate, 
-                       mr_egger_slope = egger_res_2@Estimate,
-                       mr_egger_intercept = egger_res_2@Intercept,
-                       title_text = "IDD variants", 
-                       subtitle_text = paste0("IDD (IS,DK & FIN) Exposure and Dorsalgia (UK-Biobank) Outcome",
-                                              "\nIVW estimate is : ", format(coef(mr_slope_2)[1], digits = 3)), 
-                       xlab_text = "Exposure IDD-log(OR)", ylab_text = "Outcome Dorsalgia-log(OR)",
-                       xlim_v = NULL)
-(gp2)
+MRst_forplot <- rbindlist(mr_res_st) %>% 
+  filter(method=="Inverse variance weighted")
 
-# Combine in singleplot
-gp + gp2
+MRst_plot <- forestplot(MRst_forplot, 
+           title="MR results (IVW) after Steiger filtering",
+           name=outcome, 
+           estimate = b, 
+           se=se, 
+           colour = exposure,
+           xlab="Beta",
+           ylab="Outcome"
+           )
 
 ```
 
-```{r Normal vs t-dist}
-##############################################################
-# t-test vs normal
-# Let's observe the impact with the number of variants
-##############################################################
+This is an example of the Scatter plot of the effect of BMI on healthspan (which is reverse-coded, so should be interpreted as morbidity/ mortality). The effect is nicely consistent across the different methods, though it seems largely driven by a small number of SNPs. 
 
-idd_inp <- mr_input(bx = data_idd_exp$x,
-                    by = data_idd_exp$y,
-                    bxse = data_idd_exp$sex,
-                    byse = data_idd_exp$sey)
+![](../results/scatter_BMI_healthspan_steiger.svg)
+
+Results before Steiger filtering:
+
+```{r res}
+
+restable <- rbindlist(mr_res) %>% 
+  select(!c(id.exposure, id.outcome))
+
+kable(restable)
+
+MRres_plot
+
+```
 
 
-ivw_res_norm <- mr_ivw(idd_inp)
-ivw_res_t <- mr_ivw(idd_inp, distribution = "t-dist")
+Results after Steiger filtering:
 
-print("P-value with normal assumptions: ")
-print(ivw_res_norm@Pvalue)
+```{r res Steiger}
 
-print("P-value with t-distribution: ")
-print(ivw_res_t@Pvalue)
+
+restable <- rbindlist(mr_res_st) %>% 
+  select(!c(id.exposure, id.outcome))
+
+kable(restable)
+MRst_plot
+
+```
+
+# Part 2: Sensitivity analyses
+
+Below are a number of extra sensitivity analyses to follow up and assess the robustness of the results. Opinions are divided on which are the most important/ crucial. For general purposes one can suffice with the methods included in the TwoSampleMR package, with the addition of Isq and SIMEX correction and maybe MR-PRESSO (part 3). Code for these standard follow-ups is provided below.
+
+## Pleiotropy
+
+First, using MR Egger, we test if there is pleiotropy, for the Steiger corrected results. Steiger filters out specific pleiotropic SNPs (that have a relationship with the outcome), but other sources of pleiotropy may be detected by MR Egger.
+
+```{r Pleiotropy}
+
+# MR-Egger intercept after Steiger filtering.
+
+MEintercept <- list()
+for (i in 1:length(exposure_outcome)) {
+  res <- data.frame(mr_pleiotropy_test(exposure_outcome[[i]]))
+  MEintercept[[i]] <- res
+}
+
+MEintercept <- rbindlist(MEintercept)
+
+kable(MEintercept %>% 
+  select(exposure, outcome, egger_intercept, se, pval))
+
+```
+
+
+
+
+## R-squared
+
+In the Steiger-filtering step, the R-squared was derived to assess the variance explained by each independent SNP in the exposure. We sum the R-squareds of each instrument to get a sense of instrument strength. Note that due to harmonizing we have different numbers of IVs in each of the analyses, which is why the Rsq for the same exposure varies per outcome. 
+
+```{r R-squared}
+
+# Extract list of R-squared for each dataframe
+r2 <- list()
+for (i in 1:length(exposure_outcome)) {
+  r2[[i]] <- tibble(exposure_outcome[[i]]$outcome[[1]], sum(subset(exposure_outcome[[i]], steiger_dir==T)$rsq.exposure))
+}
+
+res_r2 <- (rbindlist(r2))
+colnames(res_r2) <- c("outcome", "Rsq")
+kable(res_r2)
+
+```
+
+## I-squared and F-statistic
+
+In this code chunk, I-squared is computed to assess if the MR Egger can be interpreted, or needs to be SIMEX-corrected. For each analysis, the heighest (unweighted or weighted) Isq should be interpreted. If it's below .9 but above .6 a SIMEX correction should be performed. If it's below .6 it should not be reported at all. If it's above .9 no correction is needed.
+
+In the same run, we assess instrument strength by estimating the F-statistic. An F above 10 is considered acceptable instrument strength. 
+
+```{r Isq and F statistic}
+
+
+# This script and the MR-SIMEX function further below are based on Bowden et al.(2016) 
+
+# Isq function
+
+Isq <- function(y,s){
+  k          = length(y)
+  w          = 1/s^2; sum.w  = sum(w)
+  mu.hat     = sum(y*w)/sum.w  
+  Q          = sum(w*(y-mu.hat)^2)
+  Isq        = (Q - (k-1))/Q
+  Isq        = max(0,Isq)
+  return(Isq)
+}
+
+
+# Function to paste Isq and F to the data frames
+
+appendIsq <- function(x) {
+  x %>% 
+      mutate(BetaXG = beta.exposure, seBetaXG = se.exposure, seBetaYG = se.outcome) %>%
+      mutate(BXG = abs(BetaXG)) %>%
+      mutate(Isq_unweighted=Isq(BXG,seBetaXG)) %>% 
+      mutate(Isq_weighted=Isq((BXG/seBetaYG),(seBetaXG/seBetaYG))) %>% 
+      mutate(Isq_max=pmax(Isq_unweighted, Isq_weighted)) %>% 
+      mutate(Isq_max_weighted=ifelse(Isq_weighted>Isq_unweighted, "weighted", "unweighted")) %>% 
+      mutate(Fstatistic = BXG^2/seBetaXG^2) %>% 
+      mutate(mFstatistic = mean(Fstatistic))
+}
+
+# Apply the function
+
+exposure_outcome_f <- list()
+for (i in 1:length(exposure_outcome)) {
+  exposure_outcome_f[[i]] <- appendIsq(exposure_outcome[[i]])
+}
+
+# Before we continue, filter out the SNPs with the wrong effect direction according to the Steiger analysis
+
+for (i in 1:length(exposure_outcome_f)) {
+  exposure_outcome_f[[i]] <- subset(exposure_outcome_f[[i]], steiger_dir==TRUE)
+}
+
+# Extract max Isq and F values per outcome, and make columns indicating if F is sufficient and if SIMEX should be applied 
+
+isqs <- list()
+for (i in 1:length(exposure_outcome_f)) {
+  isqs[[i]] <- exposure_outcome_f[[i]] %>%
+      group_by(exposure, outcome) %>% 
+      summarise(Isq_max=max(Isq_max), mean_Fstatistic=max(mFstatistic), Isq_weight=first(Isq_max_weighted)) %>% 
+      mutate(SIMEX=ifelse(Isq_max>0.6 & Isq_max<0.9, "SIMEX_egger", NA)) %>% 
+      mutate(SIMEX=ifelse(Isq_max>0.9, "Standard_egger", SIMEX)) %>%
+      mutate(SIMEX=ifelse(Isq_max<0.6, "No_egger", SIMEX)) %>% 
+      mutate(Instrument_strength=ifelse(mean_Fstatistic<10, "weak", "sufficient"))
+}
+
+isqs <- rbindlist(isqs)
+
+kable(isqs)
+
+saveRDS(exposure_outcome_f, "exposure_outcome_f.rds")
+
+```
+
+In this example, instrument strength is sufficient. For all exposure-outcome combinations, the unweighted I2 is the highest, and MR Egger SIMEX-correction is necessary.
+
+## SIMEX-correction for MR-Egger
+
+The SIMEX correction takes long to run when you run 10,000 iterations (which is recommended) so it is advisable to run this on a cluster. In this example, we run using B=1000.
+
+```{r SIMEX}
+
+exposure_outcome_f <- readRDS("exposure_outcome_f.rds")
+
+# The simex correction function
+
+simexfunction <- function(x) {
+  
+  Isq_max <- x$Isq_max[1]
+  
+  if (Isq_max < 0.6 | Isq_max > 0.9) {return(NULL)}
+  
+  if (x$Isq_max_weighted[[1]] == "weighted") {
+    
+    x_trans <- x %>% mutate(y = beta.outcome * sign(beta.exposure), exposure = abs(beta.exposure))
+    fit <- lm(y ~ exposure, weights=1/se.outcome^2, data = x_trans, x = TRUE, y = TRUE)
+    
+  }
+  
+  if (x$Isq_max_weighted[[1]] == "unweighted") {
+    
+    x_trans <- x %>% mutate(y = beta.outcome, exposure = abs(beta.exposure))
+    fit <- lm(y ~ exposure, data = x_trans, x = TRUE, y = TRUE)
+    
+  }
+  
+  res <- summary(simex(fit,
+                       B = 1000,
+                       measurement.error = x$se.exposure,
+                       SIMEXvariable = "exposure",
+                       fitting.method = "quad",
+                       asymptotic = "FALSE"))
+  
+  res$coefficients
+  
+}
+
+# Apply the function  
+simex_res <- exposure_outcome_f %>%
+  map(simexfunction)
+
+outcome_name_vector <- vector()
+
+for (i in 1:length(exposure_outcome_f)) {
+  outcome_name_vector[[i]] <- exposure_outcome[[i]]$outcome[[1]]
+}
+
+names(simex_res) <- outcome_name_vector
+
+# Results in nexted lists, extract the results and wrangle to dataframe
+
+unnested <- compact(simex_res)
+for (i in 1:length(unnested)) {
+  unnested[[i]] <- data.frame(unnested[[i]]$jackknife)
+  unnested[[i]] <- unnested[[i]] %>% slice(2)
+  colnames(unnested[[i]]) <- c("simex_estimate", "simex_SE", "simex_t-value", "simex_p-value")
+}
+
+unnested <- rbindlist(unnested, use.names = T, id=T)
+unnested <- unnested %>% rename(outcome=.id)
+
+# Add to the dataframe containing the results and isqs
+simex_results <- full_join(isqs, unnested)
+
+
+```
+These are the SIMEX-corrected MR-Egger estimates.
+
+``` {r res simex}
+
+kable(simex_results)
+
+```
+
+
+## Heterogeneity 
+
+The code below assesses heterogeneity using Cochran's Q, leave-one-out analysis, and single-snp analysis. LOO-plots show the consistency of the effects when a single SNP is left out of the instrument set. Single-SNP funnel plots show the effect of each single SNP to visualize if there's  asymmetry, that is: if effects from weaker variants tend to go in one direction. Q is a formal test of such SNP effect outliers. If Q is much larger than the number of instrument SNPs it becomes significant. 
+
+```{r Heterogeneity analyses, echo=F, results='hide'}
+
+# Here, I use the original (unfiltered) data, subsetting them for a correct Steiger-direction, that can be changed if desired.
+
+# Leave-one-out analysis
+
+loo <- list()
+for (i in 1:length(exposure_outcome)) {
+  loores <- data.frame(mr_leaveoneout(subset(exposure_outcome[[i]], steiger_dir==TRUE)))
+  loo[[i]] <- loores
+}
+
+# LOO plots are written to results directory
+
+for (i in 1:length(loo)) {
+  res1 <- loo[[i]]
+  name <- paste0("LOO_",res1[[c(1, 1)]],"_",res1[[c(2, 1)]][1])
+  p_save <- mr_leaveoneout_plot(as.data.frame(res1))[[1]]
+  ggsave(plot = p_save,filename = paste0("../results/",name,".svg"))
+}
+
+
+# Single SNP analysis
+
+single <- list()
+for (i in 1:length(exposure_outcome)) {
+  singleres <- data.frame(mr_singlesnp(subset(exposure_outcome[[i]], steiger_dir==TRUE)))
+  single[[i]] <- singleres
+}
+
+# Funnel plots are written to results directory
+
+for (i in 1:length(loo)) {
+  res1 <- single[[i]]
+  name <- paste0("Funnel_",res1[[c(1, 1)]],"_",res1[[c(2, 1)]])
+  p_save <- mr_funnel_plot(as.data.frame(res1))[[1]]
+  ggsave(p_save ,filename = paste0("../results/",name,".svg"))
+}
+
+# cochran's Q
+
+Q <- list()
+for (i in 1:length(exposure_outcome)) {
+  Qres <- data.frame(mr_heterogeneity(subset(exposure_outcome[[i]], steiger_dir==TRUE)))
+  Q[[i]] <- Qres
+}
+
+Q <- rbindlist(Q) 
+
+```
+
+As an example, here is the leave-one-out plot for healthspan:
+
+![](../results/LOO_BMI_healthspan.svg){height=200%}   
+
+And a funnel plot:
+
+![](../results/Funnel_BMI_healthspan.svg)
+
+
+Q-statistics: 
+
+``` {r res Q}
+
+kable(Q)
+
+```
+
+# Part 3: Different MR tools 
+
+## MR-PRESSO
+
+MR-PRESSO (Mendelian Randomization Pleiotropy RESidual Sum and Outlier) can be used to assess for and correct for horizontal pleiotropy. MR-PRESSO is computationally intense and should be run on a cluster. Unfortunately, decreasing the number of iterations often doesn't help (it needs more elements), so you can run it using parallel processing (requires furrr package).
+
+```{r MR-PRESSO, eval=F}
+
+presso <- function(x) {
+   res <- mr_presso(data=data.frame(x),
+                              BetaOutcome = "beta.outcome", 
+                              BetaExposure = "beta.exposure", 
+                              SdOutcome = "se.outcome", 
+                              SdExposure = "se.exposure", 
+                              OUTLIERtest = TRUE, DISTORTIONtest = TRUE,
+                              NbDistribution = 10000, 
+                              SignifThreshold = 0.05)
+}
+
+# Using the package "furrr" you can run this function in parallel using these commands:
+
+# Get parallel program started. X is the number of processes, so the number of trait combinations you want to run in parallel
+  plan(multisession, workers = 3)
+
+# Run the analyses
+  future_map(exposure_outcome, presso)
+
+
+# Run it serially (does not require furrr):
+
+# map(exposure_outcome, presso)
+
+# Extract main result
+
+presso_res <- list()
+for (i in 1:length(res)) {
+  presso_res[[i]] <- res[[i]]$`Main MR results`
+}
+
+# Give the elements the name of the outcome
+
+names(presso_res) <- outcome_name_vector
+
+presso_res <- rbindlist(presso_res, use.names=T, idcol = T) %>% 
+  mutate(Exposure="MDD")
+
+```
+
+
+
+# Extra functions
+
+If you want to automate your MR jobs, the functions below may be of help to run a larger number of analyses in the same go.
+
+```{r OPTIONAL Automated instruments, eval=F}
+
+############################### Optional
+
+# Function for extracting hits
+extract <- function(file, trait) {
+  
+  sumstats <- fread(file)
+  
+  sumstats <- sumstats %>% 
+    mutate(exposure=trait) %>% 
+    rename(effect_allele=A1, other_allele=A2, eaf=EAF, beta=B, se=SE, pval=P, samplesize=N)
+  
+  hits <- subset(sumstats, as.numeric(pval)<5e-08)
+  
+  fwrite(hits, file = paste0("sumstats/", trait, "_hits.txt"), sep=" ", na=NA, quote=F)
+}
+
+# Define file names
+files <- c("xxx",
+           "xxx",
+           "xxx"
+           )
+# Name the traits
+traits <- c("xxx", "xxx", "xxx")
+
+# Run the function
+map2(files, traits, extract)
+
+# Read in the hit files that were just created 
+files <- list.files(path="sumstats/", pattern=glob2rx("*_hits.txt"), full.name=T)
+
+# Function for clumping the hit files
+clump <- function(file) {
+  x <- read_exposure_data(file,
+                          phenotype_col = "exposure")
+  y <- clump_data(x, clump_p1=5e-08)
+  
+  if (nrow(y)>10) # If there's fewer than 10 instruments when using a threshold of 5e-08, select SNPs with a p-value below 5e-7
+    {res <- y}
+  else
+    {res <- clump_data(x, clump_p1=5e-7)}
+  
+  if (nrow(res)<10) # If there's still fewer than 10, further increase the threshold
+  {res <- clump_data(x, clump_p1=5e-6)}
+  
+  if (nrow(res)<10)
+  {res <- clump_data(x, clump_p1=5e-5)}
+
+  tibble(res)
+}
+
+# Run the clumping function
+
+exp_dat <- list()
+
+for (i in 1:length(files)) {
+  exp_dat[[i]] <- clump(files[[i]])
+}
+
+# Use the trait names to name the elements in the list
+names(exp_dat) <- traits
+
+# Count the number of instruments per exposure 
+count <- list()
+for (i in 1:length(exp_dat)) {
+  count[[i]] <- exp_dat[[i]] %>% group_by(exposure) %>% 
+    summarise(IV_SNPs=n())
+}
 
 ```
