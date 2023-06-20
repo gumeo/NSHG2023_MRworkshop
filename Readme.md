@@ -28,6 +28,10 @@ We recommend you to read the following before the workshop
 
 To run the `notebooks`, you can either knit them into an html document, or run each chunk interactively in Rstudio.
 
+### Reporting results
+
+[Here](https://docs.google.com/spreadsheets/d/1-34F8n7h3E_XHdxVpUESoVDhFuOmqtDUx4NtIHWwNRI/edit?usp=sharing) is a googledrive document where you should submit your personalized results!
+
 ## Presentations
 
-To be added!
+Can be found under `./presentations`.
