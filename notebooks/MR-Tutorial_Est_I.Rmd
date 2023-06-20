@@ -224,3 +224,32 @@ print("P-value with t-distribution: ")
 print(ivw_res_t@Pvalue)
 
 ```
+
+```{r Normal vs t-dist}
+##############################################################
+# t-test vs normal
+# Let's observe the impact with the number of variants
+##############################################################
+
+# Seed is number of first name letter in alphabet
+my_first_letter <- "g"
+seed_number <- which(letters %in% c(my_first_letter))
+print(paste0("My seed number is: ", seed_number))
+set.seed(seed_number)
+
+# Sample random 20 instruments
+subset_inds <- sample(1:nrow(data_idd_exp), size = 20)
+idd_inp <- mr_input(bx = data_idd_exp$x[subset_inds],
+                    by = data_idd_exp$y[subset_inds],
+                    bxse = data_idd_exp$sex[subset_inds],
+                    byse = data_idd_exp$sey[subset_inds])
+
+
+ivw_res_norm <- mr_ivw(idd_inp)
+
+print("Here is my estimate: ")
+print(ivw_res_norm@Estimate)
+
+# Write code for the rest of the numbers in the google drive document!
+
+```
