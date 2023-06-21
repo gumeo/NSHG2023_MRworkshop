@@ -1,5 +1,5 @@
 ---
-title: "MR tutorial I"
+title: "MR tutorial II"
 output:
   html_document:
     code_folding: hide
