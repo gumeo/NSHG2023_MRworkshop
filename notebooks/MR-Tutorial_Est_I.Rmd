@@ -225,7 +225,7 @@ print(ivw_res_t@Pvalue)
 
 ```
 
-```{r Normal vs t-dist}
+```{r Normal vs t-dist2}
 ##############################################################
 # t-test vs normal
 # Let's observe the impact with the number of variants
